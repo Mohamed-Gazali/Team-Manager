@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 # ---------------------
 st.set_page_config(page_title="Team Manager", layout="wide", page_icon="🚀")
 
-API_URL = "http://127.0.0.1:8000"  # ← Remplace par ton URL Render en production
+API_URL = "https://team-manager-roi3.onrender.com" # ← Remplace par ton URL Render en production
 
 # ---------------------
 # SESSION STATE — doit être AVANT tout le reste
