@@ -1,13 +1,14 @@
 import streamlit as st
 import requests
 from datetime import datetime, timedelta
+import os
 
 # ─────────────────────────────────────────
 # CONFIG — EN PREMIER
 # ─────────────────────────────────────────
 st.set_page_config(page_title="Team Manager", layout="wide", page_icon="🚀")
 
-API_URL = "http://127.0.0.1:8000"  # ← Remplace par ton URL Render en production
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000") # ← Remplace par ton URL Render en production
 
 # ─────────────────────────────────────────
 # SESSION STATE — AVANT TOUT

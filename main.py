@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlmodel import Field, SQLModel, create_engine, Session, select
 from pydantic import BaseModel
@@ -6,18 +6,35 @@ from datetime import datetime, timedelta
 from openai import OpenAI
 from dotenv import load_dotenv
 import os, re, json, bcrypt
-import jwt  # PyJWT
+import jwt
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ── Clé secrète JWT (dans .env en production) ──
-SECRET_KEY = os.getenv("SECRET_KEY", "change-moi-en-production-clé-très-longue")
+client     = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+SECRET_KEY = os.getenv("SECRET_KEY", "change-moi-en-production")
 ALGORITHM  = "HS256"
 TOKEN_EXPIRE_HOURS = 8
 
-app = FastAPI(title="Team Manager API", version="2.0")
+app    = FastAPI(title="Team Manager API", version="3.0")
 bearer = HTTPBearer()
+
+# ─────────────────────────────────────────
+# DATABASE — PostgreSQL en prod, SQLite en local
+# ─────────────────────────────────────────
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if DATABASE_URL:
+    # ✅ Production — PostgreSQL sur Render
+    # Render fournit "postgres://" mais SQLAlchemy veut "postgresql://"
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(DATABASE_URL)
+    print("✅ Connecté à PostgreSQL")
+else:
+    # ✅ Local — SQLite
+    engine = create_engine("sqlite:///database.db")
+    print("⚠️  PostgreSQL non trouvé — SQLite utilisé en local")
 
 # ─────────────────────────────────────────
 # MODÈLES
@@ -30,14 +47,14 @@ class StatusUpdate(BaseModel):
     status: str
 
 class UserCreate(BaseModel):
-    name: str
+    name:     str
     password: str
-    role: str = "member"
+    role:     str = "member"
 
 class User(SQLModel, table=True):
     id:       int | None = Field(default=None, primary_key=True)
     name:     str        = Field(unique=True, index=True)
-    password: str        # ← bcrypt hash, jamais le vrai mot de passe
+    password: str
     role:     str        = "member"
 
 class Task(SQLModel, table=True):
@@ -52,10 +69,8 @@ class Task(SQLModel, table=True):
     completed_at: str | None = None
 
 # ─────────────────────────────────────────
-# DATABASE
+# STARTUP
 # ─────────────────────────────────────────
-
-engine = create_engine(f"sqlite:///database.db")
 
 def create_db():
     SQLModel.metadata.create_all(engine)
@@ -63,12 +78,12 @@ def create_db():
 @app.on_event("startup")
 def on_startup():
     create_db()
-    # Crée un admin par défaut si aucun user n'existe
     with Session(engine) as session:
         if not session.exec(select(User)).first():
             hashed = bcrypt.hashpw("admin".encode(), bcrypt.gensalt()).decode()
             session.add(User(name="admin", password=hashed, role="admin"))
             session.commit()
+            print("✅ Admin par défaut créé")
 
 # ─────────────────────────────────────────
 # JWT — HELPERS
@@ -92,11 +107,9 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=401, detail="Token invalide")
 
 def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> dict:
-    """Dépendance FastAPI — injecte l'utilisateur courant dans les routes protégées."""
     return decode_token(creds.credentials)
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Dépendance — réserve la route aux admins."""
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Accès réservé aux admins")
     return user
@@ -105,20 +118,19 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 # ROUTES — AUTH
 # ─────────────────────────────────────────
 
+@app.get("/")
+def root():
+    db_type = "PostgreSQL" if os.getenv("DATABASE_URL") else "SQLite"
+    return {"status": "✅ Team Manager API v3.0", "database": db_type}
+
 @app.post("/login")
 def login(data: UserCreate):
     with Session(engine) as session:
         user = session.exec(select(User).where(User.name == data.name)).first()
-        # Vérification bcrypt — résistant au timing attack
         if not user or not bcrypt.checkpw(data.password.encode(), user.password.encode()):
             raise HTTPException(status_code=401, detail="Identifiants incorrects")
         token = create_token(user.id, user.name, user.role)
-        return {
-            "success": True,
-            "token":   token,
-            "name":    user.name,
-            "role":    user.role
-        }
+        return {"success": True, "token": token, "name": user.name, "role": user.role}
 
 # ─────────────────────────────────────────
 # ROUTES — USERS
@@ -129,6 +141,8 @@ def create_user(data: UserCreate):
     with Session(engine) as session:
         if session.exec(select(User).where(User.name == data.name)).first():
             raise HTTPException(status_code=400, detail="Ce nom d'utilisateur est déjà pris")
+        if len(data.password) < 6:
+            raise HTTPException(status_code=400, detail="Mot de passe trop court (6 caractères minimum)")
         hashed = bcrypt.hashpw(data.password.encode(), bcrypt.gensalt()).decode()
         user   = User(name=data.name, password=hashed, role=data.role)
         session.add(user)
@@ -138,7 +152,6 @@ def create_user(data: UserCreate):
 
 @app.get("/users")
 def get_users(_: dict = Depends(get_current_user)):
-    """Route protégée — nécessite d'être connecté."""
     with Session(engine) as session:
         users = session.exec(select(User)).all()
         return [{"id": u.id, "name": u.name, "role": u.role} for u in users]
